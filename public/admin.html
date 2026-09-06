@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>团子 · 管理后台</title>
+    <link rel="stylesheet" href="/style.css" />
+    <style>
+      body { display: block; }
+      .admin { max-width: 960px; margin: 0 auto; padding: 24px 20px 60px; }
+      .admin-top { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+      .admin-top h1 { font-size: 20px; margin: 0; }
+      .admin-sub { color: var(--text-2); font-size: 13px; }
+      .admin-note { color: var(--text-2); font-size: 12.5px; margin: 6px 0 20px; line-height: 1.6; }
+      .stats { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; }
+      .stat { background: var(--surface); border: 1px solid var(--divider); border-radius: 8px; padding: 12px 16px; min-width: 110px; }
+      .stat-num { font-size: 22px; font-weight: 700; }
+      .stat-label { font-size: 12px; color: var(--text-2); margin-top: 2px; }
+      .refresh-line { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); margin-bottom: 14px; }
+      .live-dot { width: 7px; height: 7px; border-radius: 999px; background: var(--ok); animation: pulse 2.4s ease-in-out infinite; }
+      .rooms { display: flex; flex-direction: column; gap: 14px; }
+      .room {
+        background: var(--surface); border: 1px solid var(--divider); border-radius: 10px; overflow: hidden;
+      }
+      .room-head { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--divider); flex-wrap: wrap; }
+      .room-title { font-size: 15px; font-weight: 700; }
+      .room-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+      .badge { font-size: 11.5px; color: var(--text-2); background: var(--surface-2); border-radius: 999px; padding: 3px 10px; }
+      .room-actions { margin-left: auto; display: flex; gap: 8px; }
+      .btn-danger { border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--divider)); background: transparent; color: var(--danger); border-radius: 6px; height: 30px; padding: 0 12px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+      .btn-danger:hover { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+      table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      th, td { text-align: left; padding: 9px 16px; border-bottom: 1px solid var(--divider); }
+      th { font-size: 11.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-2); }
+      tr:last-child td { border-bottom: none; }
+      td.ip { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-2); }
+      .kick { border: none; background: transparent; color: var(--danger); cursor: pointer; font-size: 12.5px; font-weight: 600; padding: 4px 8px; border-radius: 5px; }
+      .kick:hover { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+      .empty-members { padding: 12px 16px; color: var(--text-2); font-size: 12.5px; }
+      .empty { text-align: center; color: var(--text-2); padding: 48px 0; }
+      .login { max-width: 340px; margin: 80px auto 0; background: var(--surface); border: 1px solid var(--divider); border-radius: 12px; padding: 24px; display: flex; flex-direction: column; gap: 14px; box-shadow: var(--shadow); }
+      .login h1 { font-size: 17px; margin: 0; }
+      .login p { margin: 0; font-size: 12.5px; color: var(--text-2); line-height: 1.6; }
+      .login input { border: 1px solid var(--divider); border-radius: 6px; padding: 10px 12px; font-size: 14px; background: var(--bg); color: var(--text); outline: none; }
+      .login input:focus { border-color: var(--accent); }
+      .login .error { min-height: 16px; }
+    </style>
+  </head>
+  <body>
+    <div class="login" id="login" hidden>
+      <h1>管理后台</h1>
+      <p>输入管理员口令（服务启动时终端打印的那串）。只能查看房间和成员信息，看不到聊天正文。</p>
+      <input id="admin-token" type="password" placeholder="管理员口令" autocomplete="off" />
+      <p class="error" id="login-error"></p>
+      <button class="btn btn-primary" id="login-btn">登录</button>
+    </div>
+
+    <div class="admin" id="dashboard" hidden>
+      <div class="admin-top">
+        <h1>管理后台</h1>
+        <span class="admin-sub">团子 Dango</span>
+        <button class="btn" id="logout" style="margin-left:auto;">退出</button>
+      </div>
+      <p class="admin-note">仅展示元信息：房间、成员昵称与 IP、人数、消息条数、文件数。不含聊天正文和文件内容。</p>
+
+      <div class="stats">
+        <div class="stat"><div class="stat-num" id="stat-rooms">0</div><div class="stat-label">房间</div></div>
+        <div class="stat"><div class="stat-num" id="stat-members">0</div><div class="stat-label">在线成员</div></div>
+        <div class="stat"><div class="stat-num" id="stat-messages">0</div><div class="stat-label">消息总数</div></div>
+        <div class="stat"><div class="stat-num" id="stat-files">0</div><div class="stat-label">文件总数</div></div>
+      </div>
+
+      <div class="refresh-line"><span class="live-dot"></span><span id="refresh-text">实时刷新中</span></div>
+
+      <div class="rooms" id="rooms"></div>
+    </div>
+
+    <div class="toast" id="toast" hidden></div>
+
+    <script src="/admin.js"></script>
+  </body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "name": "dango",
+  "version": "1.0.0",
+  "private": true,
+  "description": "团子 Dango — a tiny LAN chat and file sharing app",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

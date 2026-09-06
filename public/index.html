@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <title>团子 Dango</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <button type="button" class="btn rooms-toggle" id="rooms-toggle" title="房间列表" hidden>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+          房间
+          <span class="rooms-unread" id="rooms-unread" hidden></span>
+        </button>
+        <div class="brand">团子 <span class="brand-en">Dango</span></div>
+        <div class="room-name" id="room-name" hidden></div>
+        <div class="conn" id="conn" data-state="connecting">
+          <span class="conn-dot"></span>
+          <span id="conn-label">正在连接…</span>
+        </div>
+        <div class="spacer"></div>
+        <button type="button" class="btn leave" id="leave-room" title="退出当前房间" hidden>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          退出房间
+        </button>
+        <button type="button" class="btn members-toggle" id="members-toggle" title="在线成员">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          <span class="member-count">0</span>
+        </button>
+        <button type="button" class="btn identity" id="identity" title="当前昵称">
+          <span class="avatar avatar-me" id="my-initial">?</span>
+          <span class="identity-name" id="my-name">未登录</span>
+        </button>
+      </header>
+
+      <div class="layout">
+        <aside class="sidebar">
+          <div class="section-title">在线成员 · <span class="member-count">0</span></div>
+          <ul class="members" id="members"></ul>
+        </aside>
+
+        <main class="chat">
+          <div class="scroll" id="scroll">
+            <div class="stream" id="messages" aria-live="polite"></div>
+          </div>
+
+          <button type="button" class="new-pill" id="new-pill" hidden>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="19 12 12 19 5 12"/><line x1="12" y1="5" x2="12" y2="19"/></svg>
+            <span id="new-pill-label">1 条新消息</span>
+          </button>
+
+          <div class="composer-area">
+            <div class="emoji-picker" id="emoji-picker" hidden></div>
+            <div class="attach-strip" id="attach-strip" hidden></div>
+            <form class="composer" id="composer">
+              <button type="button" class="icon-btn" id="emoji-toggle" title="表情">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
+              </button>
+              <label class="icon-btn" title="发送文件">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                <input id="file" type="file" multiple hidden />
+              </label>
+              <textarea id="message" rows="1" maxlength="4000" placeholder="输入消息或粘贴图片，Enter 发送"></textarea>
+              <button type="submit" class="icon-btn send" title="发送">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+              </button>
+            </form>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <div class="overlay rail-overlay" id="rail-overlay" hidden>
+      <nav class="rail" id="rail">
+        <div class="rail-title">房间</div>
+        <div class="rail-rooms" id="rail-rooms"></div>
+        <button type="button" class="rail-add" id="rail-add" title="加入或创建房间">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          <span class="rail-add-label">加入 / 创建</span>
+        </button>
+      </nav>
+    </div>
+
+    <div class="overlay drawer-overlay" id="members-overlay" hidden>
+      <div class="drawer">
+        <div class="section-title">在线成员 · <span class="member-count">0</span></div>
+        <ul class="members" id="members-drawer"></ul>
+      </div>
+    </div>
+
+    <div class="overlay lightbox" id="lightbox" hidden>
+      <img id="lightbox-img" alt="预览" />
+      <a class="lightbox-download" id="lightbox-download" download>下载原图</a>
+    </div>
+
+    <dialog class="modal" id="identity-dialog">
+      <form id="identity-form" method="dialog">
+        <div class="modal-title" id="identity-title">进入团子</div>
+        <div class="seg" id="mode-seg">
+          <button type="button" class="seg-btn is-active" data-mode="join">加入房间</button>
+          <button type="button" class="seg-btn" data-mode="create">创建房间</button>
+        </div>
+        <p class="modal-hint" id="mode-hint">输入房间口令和昵称即可加入。</p>
+        <label class="field" id="field-room" hidden>
+          <span>房间名（选填）</span>
+          <input id="room" maxlength="40" placeholder="例如 项目组、家庭" />
+        </label>
+        <label class="field">
+          <span>昵称</span>
+          <input id="nickname" maxlength="40" required autocomplete="nickname" placeholder="输入昵称" />
+        </label>
+        <label class="field">
+          <div class="field-head">
+            <span id="code-label">房间口令</span>
+            <button type="button" class="link-btn" id="regen" hidden>换一个</button>
+          </div>
+          <input id="code" inputmode="numeric" maxlength="4" autocomplete="off" required placeholder="4 位数字口令" />
+        </label>
+        <p class="error" id="identity-error"></p>
+        <div class="modal-actions">
+          <button type="button" class="btn" id="identity-cancel">取消</button>
+          <button type="submit" class="btn btn-primary" id="identity-submit">加入</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast" hidden></div>
+
+    <template id="tpl-file">
+      <div class="file-card">
+        <span class="file-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
+        </span>
+        <div class="file-body">
+          <div class="file-name"></div>
+          <div class="file-meta"></div>
+          <div class="file-progress" hidden><div class="file-progress-bar"></div></div>
+        </div>
+        <a class="file-download" title="下载" hidden>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </a>
+      </div>
+    </template>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
