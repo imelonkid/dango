@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, readdir, stat, unlink, rm } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile, rename, stat, unlink, rm } from 'node:fs/promises';
 import { networkInterfaces } from 'node:os';
 import { basename, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +15,8 @@ const MAX_MESSAGE_LENGTH = 4000;
 const MAX_MESSAGES = 500;
 const MAX_ROOMS = 100;
 const MAX_NAME_LENGTH = 40;
+const DEFAULT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // 30 天无更新则销毁房间
+const SWEEP_INTERVAL_MS = 60 * 60 * 1000; // 每小时扫一次过期房间
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -120,11 +122,40 @@ export async function createApp(options = {}) {
   const adminToken = options.adminToken || process.env.ADMIN_TOKEN || randomBytes(6).toString('hex');
   const maxFileSize = Number(options.maxFileSize || process.env.MAX_FILE_SIZE || DEFAULT_MAX_FILE_SIZE);
   const dataDir = options.dataDir || DATA_DIR;
+  const retentionMs = Number(
+    options.retentionMs
+    ?? (process.env.RETENTION_DAYS ? Number(process.env.RETENTION_DAYS) * 24 * 60 * 60 * 1000 : DEFAULT_RETENTION_MS),
+  );
 
   const rooms = new Map(); // roomId -> room
   const roomByCode = new Map(); // 4位口令 -> roomId
   const sessions = new Map(); // sessionToken -> session
+  const sessionsFile = join(dataDir, '_sessions.json');
   await mkdir(dataDir, { recursive: true });
+
+  // 原子写：先写临时文件再改名，避免写一半损坏
+  async function writeJsonAtomic(path, data) {
+    const tmp = `${path}.${randomBytes(4).toString('hex')}.tmp`;
+    await writeFile(tmp, JSON.stringify(data));
+    await rename(tmp, path);
+  }
+
+  function persistRoom(room) {
+    const snapshot = {
+      id: room.id,
+      code: room.code,
+      name: room.name,
+      createdAt: room.createdAt,
+      lastActivity: room.lastActivity,
+      messages: room.messages,
+    };
+    writeJsonAtomic(join(room.dir, 'room.json'), snapshot).catch(() => {});
+  }
+
+  function persistSessions() {
+    const list = [...sessions.values()];
+    writeJsonAtomic(sessionsFile, list).catch(() => {});
+  }
 
   function generateCode() {
     for (let i = 0; i < 2000; i++) {
@@ -144,6 +175,7 @@ export async function createApp(options = {}) {
     if (room.messages.length > MAX_MESSAGES) room.messages.shift();
     room.lastActivity = item.time;
     broadcast(room, `data: ${JSON.stringify(item)}\n\n`);
+    persistRoom(room);
     return item;
   }
 
@@ -180,12 +212,52 @@ export async function createApp(options = {}) {
       res.write('event: closed\ndata: {}\n\n');
       res.end();
     }
+    let removed = false;
     for (const [token, session] of [...sessions.entries()]) {
-      if (session.roomId === room.id) sessions.delete(token);
+      if (session.roomId === room.id) { sessions.delete(token); removed = true; }
     }
     rooms.delete(room.id);
     roomByCode.delete(room.code);
     await rm(room.dir, { recursive: true, force: true }).catch(() => {});
+    if (removed) persistSessions();
+  }
+
+  // 从磁盘恢复房间与会话，并清理已过期的房间
+  async function loadState() {
+    const entries = await readdir(dataDir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const dir = join(dataDir, entry.name);
+      const snapshot = await readFile(join(dir, 'room.json'), 'utf8').then(JSON.parse).catch(() => null);
+      if (!snapshot?.id || !snapshot.code) continue;
+      const room = {
+        id: snapshot.id,
+        code: snapshot.code,
+        name: snapshot.name,
+        messages: Array.isArray(snapshot.messages) ? snapshot.messages : [],
+        clients: new Map(),
+        dir,
+        createdAt: snapshot.createdAt || new Date().toISOString(),
+        lastActivity: snapshot.lastActivity || snapshot.createdAt || new Date().toISOString(),
+      };
+      rooms.set(room.id, room);
+      roomByCode.set(room.code, room.id);
+    }
+    const saved = await readFile(sessionsFile, 'utf8').then(JSON.parse).catch(() => []);
+    if (Array.isArray(saved)) {
+      for (const s of saved) {
+        if (s?.token && rooms.has(s.roomId)) sessions.set(s.token, s);
+      }
+    }
+    await sweepExpired();
+  }
+
+  // 销毁超过保留期没有更新的房间
+  async function sweepExpired() {
+    const cutoff = Date.now() - retentionMs;
+    for (const room of [...rooms.values()]) {
+      if (new Date(room.lastActivity).getTime() < cutoff) await deleteRoom(room);
+    }
   }
 
   function resolveSession(req, url) {
@@ -205,7 +277,7 @@ export async function createApp(options = {}) {
   async function adminOverview() {
     const list = await Promise.all(
       [...rooms.values()].map(async (room) => {
-        const files = await readdir(room.dir).catch(() => []);
+        const files = (await readdir(room.dir).catch(() => [])).filter((f) => f !== 'room.json');
         const members = roomSessions(room).map((s) => ({
           id: s.id,
           sender: s.sender,
@@ -269,6 +341,7 @@ export async function createApp(options = {}) {
           await mkdir(room.dir, { recursive: true });
           rooms.set(id, room);
           roomByCode.set(roomCode, id);
+          persistRoom(room);
         } else {
           if (!/^\d{4}$/.test(code)) return json(res, 400, { error: '请输入 4 位数字口令' });
           room = rooms.get(roomByCode.get(code));
@@ -286,6 +359,7 @@ export async function createApp(options = {}) {
           lastSeen: new Date().toISOString(),
         };
         sessions.set(token, session);
+        persistSessions();
         return json(res, 200, { session: token, room: { id: room.id, name: room.name, code: room.code }, sender });
       }
 
@@ -329,6 +403,7 @@ export async function createApp(options = {}) {
             if (session.id === String(memberId)) {
               const room = rooms.get(session.roomId);
               sessions.delete(token);
+              persistSessions();
               if (room) {
                 closeSessionStreams(room, token);
                 publishPresence(room);
@@ -419,6 +494,7 @@ export async function createApp(options = {}) {
 
         if (req.method === 'POST' && path === '/api/leave') {
           sessions.delete(token);
+          persistSessions();
           closeSessionStreams(room, token, { notify: false });
           publishPresence(room);
           return json(res, 200, { ok: true });
@@ -443,7 +519,14 @@ export async function createApp(options = {}) {
     }
   });
 
-  return { server, adminToken, rooms, sessions };
+  await loadState();
+
+  // 定时销毁过期房间；unref 保证不阻止进程退出（测试友好）
+  const sweepTimer = setInterval(() => { sweepExpired().catch(() => {}); }, SWEEP_INTERVAL_MS);
+  sweepTimer.unref?.();
+  server.on('close', () => clearInterval(sweepTimer));
+
+  return { server, adminToken, rooms, sessions, sweepExpired };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -458,7 +541,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     for (const { name, url } of getLanAddresses(port)) {
       console.log(`局域网访问 [${describeInterface(name)}]: ${url}`);
     }
+    const retentionDays = Math.round(Number(process.env.RETENTION_DAYS || 30));
     console.log('\n用户打开地址后，自己填房间名和口令即可建房或加入。');
+    console.log(`聊天记录持久化保存，超过 ${retentionDays} 天无更新的房间会自动销毁。`);
     console.log('按 Ctrl+C 停止服务。\n');
   });
 }

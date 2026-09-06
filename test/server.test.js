@@ -187,3 +187,57 @@ test('LAN address list skips tunnel interfaces and keeps the Thunderbolt bridge'
     { name: 'bridge0', url: 'http://169.254.10.5:3000' },
   ]);
 });
+
+test('rooms and messages persist across restart', async (t) => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'dango-'));
+  // 第一个实例：建房发消息
+  const app1 = await createApp({ adminToken: 'a', dataDir });
+  await new Promise((r) => app1.server.listen(0, '127.0.0.1', r));
+  const base1 = `http://127.0.0.1:${app1.server.address().port}`;
+  const { body: a } = await joinRoom(base1, { mode: 'create', sender: '甲', code: '4321', room: '持久化房' });
+  await fetch(`${base1}/api/messages`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${a.session}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: '重启也要在' }),
+  });
+  await new Promise((r) => setTimeout(r, 50)); // 等落盘
+  await new Promise((r) => app1.server.close(r));
+
+  // 第二个实例：同 dataDir，应恢复房间、消息与会话
+  const app2 = await createApp({ adminToken: 'a', dataDir });
+  await new Promise((r) => app2.server.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise((r) => app2.server.close(r)));
+  const base2 = `http://127.0.0.1:${app2.server.address().port}`;
+
+  // 旧会话仍然有效，历史仍在
+  const hist = await fetch(`${base2}/api/history`, { headers: { Authorization: `Bearer ${a.session}` } });
+  assert.equal(hist.status, 200);
+  const data = await hist.json();
+  assert.equal(data.room.name, '持久化房');
+  assert.equal(data.messages.at(-1).text, '重启也要在');
+
+  // 别人用同口令加入也能看到历史
+  const { body: b } = await joinRoom(base2, { mode: 'join', sender: '乙', code: '4321' });
+  assert.equal(b.room.name, '持久化房');
+});
+
+test('rooms with no activity beyond retention are destroyed', async (t) => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'dango-'));
+  const app = await createApp({ adminToken: 'a', dataDir, retentionMs: 30 * 24 * 60 * 60 * 1000 });
+  await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise((r) => app.server.close(r)));
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+
+  const { body: a } = await joinRoom(base, { mode: 'create', sender: '甲', code: '7777', room: '旧房' });
+  assert.equal(app.rooms.size, 1);
+
+  // 把最后活跃时间调到 31 天前，触发清理
+  const room = [...app.rooms.values()][0];
+  room.lastActivity = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+  await app.sweepExpired();
+
+  assert.equal(app.rooms.size, 0);
+  // 房间没了，旧会话失效、口令也进不去
+  assert.equal((await fetch(`${base}/api/history`, { headers: { Authorization: `Bearer ${a.session}` } })).status, 401);
+  assert.equal((await joinRoom(base, { mode: 'join', sender: 'x', code: '7777' })).status, 404);
+});
