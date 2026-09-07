@@ -296,6 +296,8 @@ newPill.addEventListener('click', () => {
 /* ---------- 消息通知 ---------- */
 
 const muteToggle = $('#mute-toggle');
+const moreToggle = $('#more-toggle');
+const moreMenu = $('#more-menu');
 let baseTitle = '团子 Dango';
 let audioCtx = null;
 
@@ -408,23 +410,25 @@ function alertNewMessage(room, item) {
 
 function refreshMuteButton() {
   const room = activeRoom();
-  muteToggle.hidden = !room;
   if (!room) return;
   const muted = !!room.muted;
   muteToggle.querySelector('.icon-bell').hidden = muted;
   muteToggle.querySelector('.icon-bell-off').hidden = !muted;
   muteToggle.title = muted ? '已静音（点击开启通知）' : '通知开启（点击静音本房间）';
   muteToggle.classList.toggle('muted', muted);
+  $('#menu-mute-label').textContent = muted ? '开启通知' : '静音本房间';
 }
 
-muteToggle.addEventListener('click', () => {
+function toggleMute() {
   const room = activeRoom();
   if (!room) return;
   room.muted = !room.muted;
   persist();
   refreshMuteButton();
   toast(room.muted ? `已静音「${room.name}」` : `已开启「${room.name}」通知`);
-});
+}
+
+muteToggle.addEventListener('click', toggleMute);
 
 // 回到前台：清掉当前房间未读，刷新角标
 function onPageActive() {
@@ -488,10 +492,25 @@ function renderMembers(members, sender) {
   }
 }
 
-$('#members-toggle').addEventListener('click', () => { membersOverlay.hidden = false; });
 membersOverlay.addEventListener('click', (event) => {
   if (!event.target.closest('.drawer')) membersOverlay.hidden = true;
 });
+
+/* ---------- 顶栏"更多"菜单（手机端收纳次级操作） ---------- */
+
+function closeMore() { moreMenu.hidden = true; }
+
+moreToggle.addEventListener('click', (event) => {
+  event.stopPropagation();
+  moreMenu.hidden = !moreMenu.hidden;
+});
+document.addEventListener('click', (event) => {
+  if (!moreMenu.hidden && !event.target.closest('#more-menu') && !event.target.closest('#more-toggle')) closeMore();
+});
+$('#menu-members').addEventListener('click', () => { closeMore(); membersOverlay.hidden = false; });
+$('#menu-mute').addEventListener('click', () => { closeMore(); toggleMute(); });
+$('#menu-add').addEventListener('click', () => { closeMore(); openIdentity(); });
+$('#menu-leave').addEventListener('click', () => { closeMore(); leaveActiveRoom(); });
 
 /* ---------- 图片灯箱 ---------- */
 
@@ -548,23 +567,24 @@ railOverlay.addEventListener('click', (event) => {
 });
 
 function setHeader(room) {
+  const actionButtons = [leaveButton, inviteButton, muteToggle, moreToggle, $('#identity')];
   if (!room) {
     roomNameEl.hidden = true;
-    leaveButton.hidden = true;
-    inviteButton.hidden = true;
+    for (const btn of actionButtons) btn.hidden = true;
+    closeMore();
     $('#my-initial').textContent = '?';
     $('#my-name').textContent = defaultNick || '未登录';
+    $('#menu-nick').textContent = defaultNick || '—';
     baseTitle = '团子 Dango';
-    refreshMuteButton();
     updateBadges();
     return;
   }
   roomNameEl.textContent = `${room.name} · 口令 ${room.code}`;
   roomNameEl.hidden = false;
-  leaveButton.hidden = false;
-  inviteButton.hidden = false;
+  for (const btn of actionButtons) btn.hidden = false;
   $('#my-initial').textContent = initial(room.sender);
   $('#my-name').textContent = room.sender;
+  $('#menu-nick').textContent = room.sender;
   baseTitle = `${room.name} · 团子`;
   refreshMuteButton();
   updateBadges();
@@ -923,6 +943,7 @@ document.addEventListener('keydown', (event) => {
   emojiPicker.hidden = true;
   membersOverlay.hidden = true;
   closeRail();
+  closeMore();
   if (!lightbox.hidden) lightbox.click();
 });
 
