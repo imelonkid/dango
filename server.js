@@ -28,6 +28,9 @@ const MIME_TYPES = {
   '.css': 'text/css; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
 };
 
 // 可在聊天流里直接预览的图片类型（SVG 可携带脚本，故不做内联预览）
@@ -546,7 +549,10 @@ export async function createApp(options = {}) {
       const filePath = join(PUBLIC_DIR, normalized);
       const info = await stat(filePath).catch(() => null);
       if (!info?.isFile()) return json(res, 404, { error: '页面不存在' });
-      res.writeHead(200, { 'Content-Type': MIME_TYPES[extname(filePath)] || 'application/octet-stream' });
+      res.writeHead(200, {
+        'Content-Type': MIME_TYPES[extname(filePath)] || 'application/octet-stream',
+        'Content-Length': info.size,
+      });
       createReadStream(filePath).pipe(res);
     } catch (error) {
       if (!res.headersSent) json(res, error.status || 500, { error: error.message || '服务器错误' });

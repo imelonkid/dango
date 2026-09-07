@@ -1137,3 +1137,10 @@ async function restore() {
 }
 
 restore();
+
+/* ---------- PWA：注册 Service Worker（安全上下文才有） ---------- */
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => { /* 忽略：http 局域网无 SW */ });
+  });
+}
