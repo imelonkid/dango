@@ -40,6 +40,9 @@
 [hidden] { display: none !important; }
 
 html, body { margin: 0; height: 100%; background: var(--bg); }
+body { overflow-x: hidden; }
+.app { max-width: 100vw; }
+.topbar { min-width: 0; }
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -307,11 +310,26 @@ button, input, textarea { font-family: inherit; }
 
 /* ---------- 窄屏 ---------- */
 @media (max-width: 720px) {
-  :root { --pad-x: 12px; }
+  :root { --pad-x: 10px; }
   .sidebar { display: none; }
   .members-toggle { display: inline-flex; }
-  .conn-detail { display: none; }
+
+  /* 顶栏：省空间，动作按钮只留图标 */
+  .topbar { gap: 6px; padding: 0 8px; padding-top: env(safe-area-inset-top); min-height: 52px; }
+  .brand { display: none; }
+  .btn-label { display: none; }
+  #conn-label, .conn-detail { display: none; }
+  .conn { padding: 4px; background: transparent; }
   .identity-name { display: none; }
-  .identity { padding: 0 8px 0 4px; }
+  .topbar .btn { padding: 0 8px; gap: 4px; }
+  .room-name { flex: 1 1 auto; min-width: 0; max-width: none; }
+
+  /* 底部输入区留出安全区 */
+  .composer-area { padding-bottom: calc(14px + env(safe-area-inset-bottom)); }
+
+  /* iOS 聚焦不缩放：输入控件 ≥ 16px */
+  .composer textarea, .field input, #invite-link, #share-link, #admin-token { font-size: 16px; }
+
   .bubble { max-width: 85vw; }
+  .image-bubble { width: 78vw; }
 }
