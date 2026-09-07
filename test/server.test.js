@@ -241,3 +241,26 @@ test('rooms with no activity beyond retention are destroyed', async (t) => {
   assert.equal((await fetch(`${base}/api/history`, { headers: { Authorization: `Bearer ${a.session}` } })).status, 401);
   assert.equal((await joinRoom(base, { mode: 'join', sender: 'x', code: '7777' })).status, 404);
 });
+
+test('serves over HTTPS with a generated self-signed cert', async (t) => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'dango-'));
+  const { ensureCert } = await import('../server.js');
+  const tls = await ensureCert(dataDir);
+  const app = await createApp({ adminToken: 'a', dataDir, tls });
+  await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise((r) => app.server.close(r)));
+  const port = app.server.address().port;
+
+  // 用 https + 忽略自签名校验访问
+  const https = await import('node:https');
+  const body = await new Promise((resolve, reject) => {
+    const req = https.request(
+      { host: '127.0.0.1', port, path: '/api/join', method: 'POST', rejectUnauthorized: false, headers: { 'Content-Type': 'application/json' } },
+      (res) => { let d = ''; res.on('data', (c) => { d += c; }); res.on('end', () => resolve({ status: res.statusCode, d })); },
+    );
+    req.on('error', reject);
+    req.end(JSON.stringify({ mode: 'create', sender: '甲', room: 'TLS 房' }));
+  });
+  assert.equal(body.status, 200);
+  assert.equal(JSON.parse(body.d).room.name, 'TLS 房');
+});

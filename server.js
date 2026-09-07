@@ -1,11 +1,16 @@
 import http from 'node:http';
+import https from 'node:https';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, readdir, readFile, writeFile, rename, stat, unlink, rm } from 'node:fs/promises';
-import { networkInterfaces } from 'node:os';
+import { networkInterfaces, hostname } from 'node:os';
 import { basename, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, timingSafeEqual, X509Certificate } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { pipeline } from 'node:stream/promises';
+
+const execFileAsync = promisify(execFile);
 
 const ROOT = fileURLToPath(new URL('.', import.meta.url));
 const PUBLIC_DIR = join(ROOT, 'public');
@@ -100,17 +105,45 @@ function readJson(req, limit = 16 * 1024) {
   });
 }
 
-export function getLanAddresses(port, interfaces = networkInterfaces()) {
+export function getLanAddresses(port, interfaces = networkInterfaces(), scheme = 'http') {
   const result = [];
   for (const [name, addresses] of Object.entries(interfaces)) {
     if (IGNORED_INTERFACES.test(name)) continue;
     for (const address of addresses || []) {
       if (address.family === 'IPv4' && !address.internal) {
-        result.push({ name, url: `http://${address.address}:${port}` });
+        result.push({ name, url: `${scheme}://${address.address}:${port}` });
       }
     }
   }
   return result;
+}
+
+// 用系统 openssl 生成自签名证书（覆盖本机所有局域网 IP），缓存到 <dir>/tls/。
+// 返回 { key, cert }；没有 openssl 或失败则抛错，由调用方决定回退到 HTTP。
+export async function ensureCert(dir) {
+  const tlsDir = join(dir, 'tls');
+  const certPath = join(tlsDir, 'cert.pem');
+  const keyPath = join(tlsDir, 'key.pem');
+  const [cert, key] = await Promise.all([
+    readFile(certPath).catch(() => null),
+    readFile(keyPath).catch(() => null),
+  ]);
+  if (cert && key) return { cert, key };
+
+  await mkdir(tlsDir, { recursive: true });
+  const names = new Set(['DNS:localhost', 'DNS:dango.local', 'IP:127.0.0.1']);
+  try { names.add(`DNS:${hostname()}.local`); } catch { /* ignore */ }
+  for (const addresses of Object.values(networkInterfaces())) {
+    for (const address of addresses || []) {
+      if (address.family === 'IPv4' && !address.internal) names.add(`IP:${address.address}`);
+    }
+  }
+  await execFileAsync('openssl', [
+    'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes',
+    '-keyout', keyPath, '-out', certPath, '-days', '3650',
+    '-subj', '/CN=dango', '-addext', `subjectAltName=${[...names].join(',')}`,
+  ]);
+  return { cert: await readFile(certPath), key: await readFile(keyPath) };
 }
 
 function describeInterface(name) {
@@ -302,7 +335,7 @@ export async function createApp(options = {}) {
     return { rooms: list, totalRooms: list.length };
   }
 
-  const server = http.createServer(async (req, res) => {
+  const handler = async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const path = url.pathname;
 
@@ -519,7 +552,11 @@ export async function createApp(options = {}) {
       if (!res.headersSent) json(res, error.status || 500, { error: error.message || '服务器错误' });
       else res.destroy();
     }
-  });
+  };
+
+  const server = options.tls
+    ? https.createServer({ key: options.tls.key, cert: options.tls.cert }, handler)
+    : http.createServer(handler);
 
   await loadState();
 
@@ -534,17 +571,36 @@ export async function createApp(options = {}) {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT || 3000);
   const host = process.env.HOST || '0.0.0.0';
-  const { server, adminToken } = await createApp();
+
+  // 默认走 HTTPS（浏览器加密与系统通知需要安全上下文）；NO_HTTPS=1 可强制明文
+  let tls = null;
+  let fingerprint = '';
+  if (!process.env.NO_HTTPS) {
+    try {
+      tls = await ensureCert(join(ROOT, 'data'));
+      fingerprint = new X509Certificate(tls.cert).fingerprint256;
+    } catch (error) {
+      console.warn(`\n未能生成 HTTPS 证书（需要系统 openssl），回退到 HTTP：${error.message}`);
+      console.warn('明文 HTTP 下浏览器无法使用加密和系统通知。设置 NO_HTTPS=1 可静默此提示。');
+    }
+  }
+  const scheme = tls ? 'https' : 'http';
+  const { server, adminToken } = await createApp(tls ? { tls } : {});
   server.listen(port, host, () => {
     console.log('\n团子 Dango 已启动');
     console.log(`管理员口令: ${adminToken}`);
-    console.log(`本机访问: http://localhost:${port}`);
-    console.log(`管理页面: http://localhost:${port}/admin`);
-    for (const { name, url } of getLanAddresses(port)) {
+    console.log(`本机访问: ${scheme}://localhost:${port}`);
+    console.log(`管理页面: ${scheme}://localhost:${port}/admin`);
+    for (const { name, url } of getLanAddresses(port, networkInterfaces(), scheme)) {
       console.log(`局域网访问 [${describeInterface(name)}]: ${url}`);
     }
+    if (tls) {
+      console.log('\n首次打开浏览器会提示"此连接不是私密连接"，点"仍要访问"即可（自签名证书，属正常）。');
+      console.log(`证书指纹(SHA-256): ${fingerprint}`);
+      console.log('可让对方核对指纹，确认没有被中间人替换。');
+    }
     const retentionDays = Math.round(Number(process.env.RETENTION_DAYS || 30));
-    console.log('\n用户打开地址后，自己填房间名和口令即可建房或加入。');
+    console.log('\n用户打开地址后，创建房间或用邀请码加入。');
     console.log(`聊天记录持久化保存，超过 ${retentionDays} 天无更新的房间会自动销毁。`);
     console.log('按 Ctrl+C 停止服务。\n');
   });
