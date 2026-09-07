@@ -287,6 +287,16 @@ button, input, textarea { font-family: inherit; }
 .modal-actions .btn-primary { background: var(--accent); }
 .modal-actions .btn-primary:hover { background: var(--accent); }
 
+.share-modal { width: 320px; }
+.share-modal .modal-title { margin-bottom: 4px; }
+.qr-box { display: grid; place-items: center; padding: 12px; background: #fff; border-radius: 10px; margin: 4px auto 2px; width: fit-content; }
+.qr-box img { display: block; width: 200px; height: 200px; image-rendering: pixelated; }
+#share-link { font-size: 12px; font-family: ui-monospace, Menlo, monospace; }
+.share-modal code { font-family: ui-monospace, Menlo, monospace; background: var(--surface-2); padding: 0 3px; border-radius: 3px; }
+.invite { color: var(--text-2); }
+.invite:hover { color: var(--accent-ink); }
+.bubble.undecryptable { color: var(--text-2); font-style: italic; }
+
 .toast {
   position: fixed; left: 50%; top: 64px; transform: translateX(-50%); z-index: 70;
   padding: 8px 14px; border-radius: 999px; font-size: 12.5px; font-weight: 600;

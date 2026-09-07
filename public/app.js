@@ -1,3 +1,5 @@
+import { newKeyString, importKey, encryptText, decryptText, encryptBytes, decryptBytes, cryptoReady } from './crypto.js';
+
 const $ = (selector) => document.querySelector(selector);
 
 const messagesEl = $('#messages');
@@ -14,6 +16,7 @@ const railRooms = $('#rail-rooms');
 const roomsToggle = $('#rooms-toggle');
 const roomsUnread = $('#rooms-unread');
 const leaveButton = $('#leave-room');
+const inviteButton = $('#invite');
 const newPill = $('#new-pill');
 const newPillLabel = $('#new-pill-label');
 const emojiPicker = $('#emoji-picker');
@@ -28,31 +31,34 @@ const identitySubmit = $('#identity-submit');
 const modeSeg = $('#mode-seg');
 const modeHint = $('#mode-hint');
 const fieldRoom = $('#field-room');
+const fieldLink = $('#field-link');
 const roomInput = $('#room');
+const inviteLinkInput = $('#invite-link');
 const nicknameInput = $('#nickname');
-const codeInput = $('#code');
-const codeLabel = $('#code-label');
-const regenBtn = $('#regen');
 const identityError = $('#identity-error');
 const toastEl = $('#toast');
 const fileTemplate = $('#tpl-file');
+const shareDialog = $('#share-dialog');
 
 const STORE_ROOMS = 'dango.rooms';
 const STORE_ACTIVE = 'dango.active';
 const STORE_NAME = 'dango.nickname';
 const IMAGE_RE = /\.(png|jpe?g|gif|webp|bmp|avif)$/i;
 const MAX_ROOM_MESSAGES = 500;
+const ENC_MAX_FILE = 30 * 1024 * 1024; // 加密模式下单文件上限（内存所限）
 const EMOJIS = ['😀', '😂', '😊', '😉', '👍', '🙏', '🎉', '🔥', '😅', '🤔', '😭', '😴', '👌', '❤️', '✅', '⏳'];
 
 const params = new URLSearchParams(location.search);
 const codeParam = (params.get('code') || '').trim();
+const keyParam = (new URLSearchParams(location.hash.slice(1)).get('k') || '').trim();
 
-// code -> { code, name, sender, session, events, connected, messages, members, unread, seen, lastItem }
+// code -> { code, name, sender, session, key, keyStr, events, connected, messages, members, unread, seen, lastItem }
 const joined = new Map();
+const fileCache = new Map(); // 消息 id -> 已解密内容的 objectURL
 let activeCode = null;
 let defaultNick = localStorage.getItem(STORE_NAME) || '';
-let mode = 'join'; // 加入弹窗当前模式
-let scrollbackUnread = 0; // 当前房间未读（滚动条不在底部时）
+let mode = 'join';
+let scrollbackUnread = 0;
 let atBottom = true;
 let toastTimer = null;
 
@@ -62,14 +68,10 @@ function activeRoom() {
   return activeCode ? joined.get(activeCode) : null;
 }
 
-function fileUrl(item, inline = false) {
+function fileUrl(item) {
   const room = activeRoom();
   const session = room ? room.session : '';
-  return `/api/files/${encodeURIComponent(item.fileId)}?session=${encodeURIComponent(session)}${inline ? '&inline=1' : ''}`;
-}
-
-function randomCode() {
-  return String(Math.floor(1000 + Math.random() * 9000));
+  return `/api/files/${encodeURIComponent(item.fileId)}?session=${encodeURIComponent(session)}`;
 }
 
 function formatSize(bytes) {
@@ -102,8 +104,8 @@ function initial(name) {
   return (name.trim()[0] || '?').toUpperCase();
 }
 
-function isImage(item) {
-  return item.type === 'file' && IMAGE_RE.test(item.fileName);
+function isImageName(name) {
+  return IMAGE_RE.test(name || '');
 }
 
 function el(tag, className, text) {
@@ -131,50 +133,95 @@ function scrollToBottom() {
 }
 
 function persist() {
-  const list = [...joined.values()].map((r) => ({ code: r.code, name: r.name, sender: r.sender, session: r.session }));
+  const list = [...joined.values()].map((r) => ({ code: r.code, name: r.name, sender: r.sender, session: r.session, keyStr: r.keyStr }));
   localStorage.setItem(STORE_ROOMS, JSON.stringify(list));
   if (activeCode) localStorage.setItem(STORE_ACTIVE, activeCode);
   else localStorage.removeItem(STORE_ACTIVE);
 }
 
-/* ---------- 消息渲染（针对当前房间） ---------- */
+function saveBlobAs(url, name) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name || 'file';
+  document.body.append(a);
+  a.click();
+  a.remove();
+}
 
-function buildFileCard(item, { pending = false } = {}) {
-  const card = fileTemplate.content.firstElementChild.cloneNode(true);
-  card.querySelector('.file-name').textContent = item.fileName;
-  const meta = card.querySelector('.file-meta');
-  const progress = card.querySelector('.file-progress');
-  const download = card.querySelector('.file-download');
-  if (pending) {
-    meta.textContent = `${formatSize(item.size)} · 传输中 0%`;
-    progress.hidden = false;
-  } else {
-    meta.textContent = formatSize(item.size);
-    download.hidden = false;
-    download.href = fileUrl(item);
-    download.setAttribute('download', item.fileName);
+// 取回密文文件、解密、缓存成 objectURL
+async function decryptedObjectUrl(room, item) {
+  if (fileCache.has(item.id)) return fileCache.get(item.id);
+  const res = await fetch(fileUrl(item), { headers: { Authorization: `Bearer ${room.session}` } });
+  if (!res.ok) throw new Error('下载失败');
+  const buf = new Uint8Array(await res.arrayBuffer());
+  const plain = decryptBytes(room.key, item.sender, buf);
+  const url = URL.createObjectURL(new Blob([plain]));
+  fileCache.set(item.id, url);
+  return url;
+}
+
+// 解密文件的元信息（原始文件名与大小），失败返回 null
+function decryptFileMeta(room, item) {
+  try {
+    const meta = JSON.parse(decryptText(room.key, item.sender, item.fileName));
+    return { name: String(meta.n || 'file'), size: Number(meta.s) || 0 };
+  } catch {
+    return null;
   }
+}
+
+/* ---------- 消息渲染（针对某个房间，含解密） ---------- */
+
+function undecryptableBubble(label) {
+  return el('div', 'bubble undecryptable', label || '🔒 无法解密（密钥不匹配）');
+}
+
+function buildFileCard(room, item) {
+  const meta = decryptFileMeta(room, item);
+  const card = fileTemplate.content.firstElementChild.cloneNode(true);
+  const nameEl = card.querySelector('.file-name');
+  const metaEl = card.querySelector('.file-meta');
+  const download = card.querySelector('.file-download');
+  if (!meta) {
+    nameEl.textContent = '🔒 无法解密的文件';
+    metaEl.textContent = formatSize(item.size);
+    return card;
+  }
+  nameEl.textContent = meta.name;
+  metaEl.textContent = formatSize(meta.size);
+  download.hidden = false;
+  download.href = '#';
+  download.addEventListener('click', async (event) => {
+    event.preventDefault();
+    try {
+      const url = await decryptedObjectUrl(room, item);
+      saveBlobAs(url, meta.name);
+    } catch { toast('下载或解密失败'); }
+  });
   return card;
 }
 
-function buildImage(item) {
+function buildImageBubble(room, item, name) {
   const button = el('button', 'image-bubble');
   button.type = 'button';
-  button.title = item.fileName;
+  button.title = name;
   const img = el('img');
-  img.src = fileUrl(item, true);
-  img.alt = item.fileName;
-  img.loading = 'lazy';
-  img.addEventListener('load', () => { if (atBottom) scrollToBottom(); });
+  img.alt = name;
   button.append(img);
-  button.addEventListener('click', () => openLightbox(item));
+  decryptedObjectUrl(room, item)
+    .then((url) => {
+      img.src = url;
+      img.addEventListener('load', () => { if (atBottom) scrollToBottom(); });
+    })
+    .catch(() => { button.replaceWith(undecryptableBubble('🔒 图片无法解密')); });
+  button.addEventListener('click', () => openLightbox(room, item, name));
   return button;
 }
 
-function buildMessage(room, item, { pending = false } = {}) {
+function buildMessage(room, item) {
   const mine = item.sender === room.sender;
   const wrapper = el('div', `msg${mine ? ' mine' : ''}`);
-  const cont = !pending && room.lastItem && room.lastItem.sender === item.sender && formatTime(room.lastItem.time) === formatTime(item.time);
+  const cont = room.lastItem && room.lastItem.sender === item.sender && formatTime(room.lastItem.time) === formatTime(item.time);
   if (cont) wrapper.classList.add('cont');
   else {
     const meta = el('div', 'msg-meta');
@@ -182,14 +229,31 @@ function buildMessage(room, item, { pending = false } = {}) {
     wrapper.append(meta);
   }
   if (item.type === 'file') {
-    wrapper.append(isImage(item) && !pending ? buildImage(item) : buildFileCard(item, { pending }));
+    const meta = decryptFileMeta(room, item);
+    if (meta && isImageName(meta.name)) wrapper.append(buildImageBubble(room, item, meta.name));
+    else wrapper.append(buildFileCard(room, item));
   } else {
-    wrapper.append(el('div', 'bubble', item.text));
+    let text;
+    try { text = decryptText(room.key, item.sender, item.text); } catch { text = null; }
+    wrapper.append(text === null ? undecryptableBubble() : el('div', 'bubble', text));
   }
   return wrapper;
 }
 
-// 把一条消息追加进当前房间的 DOM
+// 上传中的本地占位卡（明文，未加密前）
+function buildPendingCard(room, file) {
+  const wrapper = el('div', 'msg mine');
+  const meta = el('div', 'msg-meta');
+  meta.append(el('b', '', room.sender), el('span', '', formatTime(new Date().toISOString())));
+  wrapper.append(meta);
+  const card = fileTemplate.content.firstElementChild.cloneNode(true);
+  card.querySelector('.file-name').textContent = file.name;
+  card.querySelector('.file-meta').textContent = `${formatSize(file.size)} · 加密上传中 0%`;
+  card.querySelector('.file-progress').hidden = false;
+  wrapper.append(card);
+  return wrapper;
+}
+
 function domAppend(room, item) {
   if (!room.lastItem || dayKey(room.lastItem.time) !== dayKey(item.time)) {
     const divider = el('div', 'divider');
@@ -282,11 +346,14 @@ membersOverlay.addEventListener('click', (event) => {
 
 /* ---------- 图片灯箱 ---------- */
 
-function openLightbox(item) {
-  lightboxImg.src = fileUrl(item, true);
-  lightboxDownload.href = fileUrl(item);
-  lightboxDownload.setAttribute('download', item.fileName);
-  lightbox.hidden = false;
+async function openLightbox(room, item, name) {
+  try {
+    const url = await decryptedObjectUrl(room, item);
+    lightboxImg.src = url;
+    lightboxDownload.href = url;
+    lightboxDownload.setAttribute('download', name || 'image');
+    lightbox.hidden = false;
+  } catch { toast('图片解密失败'); }
 }
 
 lightbox.addEventListener('click', (event) => {
@@ -335,6 +402,7 @@ function setHeader(room) {
   if (!room) {
     roomNameEl.hidden = true;
     leaveButton.hidden = true;
+    inviteButton.hidden = true;
     $('#my-initial').textContent = '?';
     $('#my-name').textContent = defaultNick || '未登录';
     document.title = '团子 Dango';
@@ -343,6 +411,7 @@ function setHeader(room) {
   roomNameEl.textContent = `${room.name} · 口令 ${room.code}`;
   roomNameEl.hidden = false;
   leaveButton.hidden = false;
+  inviteButton.hidden = false;
   $('#my-initial').textContent = initial(room.sender);
   $('#my-name').textContent = room.sender;
   document.title = `${room.name} · 团子`;
@@ -366,6 +435,48 @@ function clearChatUI() {
   setHeader(null);
   setConnection('connecting', '未加入房间');
 }
+
+/* ---------- 邀请（二维码 + 复制链接） ---------- */
+
+// 邀请码 = 4 位房间码 + '.' + 密钥（base64url，不含 '.'）。一个字符串带齐进房所需的一切。
+function inviteCode(room) {
+  return `${room.code}.${room.keyStr}`;
+}
+
+function openShare(room) {
+  if (!room) return;
+  const code = inviteCode(room);
+  $('#share-room').textContent = room.name;
+  $('#share-link').value = code;
+  try {
+    const qr = window.qrcode(0, 'M');
+    qr.addData(code);
+    qr.make();
+    $('#share-qr').innerHTML = qr.createImgTag(5, 8);
+  } catch {
+    $('#share-qr').textContent = '二维码生成失败';
+  }
+  shareDialog.showModal();
+}
+
+inviteButton.addEventListener('click', () => openShare(activeRoom()));
+$('#share-close').addEventListener('click', () => shareDialog.close());
+$('#share-copy').addEventListener('click', async () => {
+  const code = $('#share-link').value;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(code);
+    } else {
+      const inp = $('#share-link');
+      inp.focus();
+      inp.select();
+      if (!document.execCommand('copy')) throw new Error('copy failed');
+    }
+    toast('邀请码已复制');
+  } catch {
+    toast('复制失败，请手动选择复制');
+  }
+});
 
 /* ---------- 连接房间 ---------- */
 
@@ -404,7 +515,6 @@ function connectRoom(room) {
   });
 }
 
-// 本地移除一个房间（被踢 / 被关 / 主动退出后调用）
 function removeRoom(code, message) {
   const room = joined.get(code);
   if (!room) return;
@@ -424,11 +534,11 @@ function removeRoom(code, message) {
 async function leaveActiveRoom() {
   const room = activeRoom();
   if (!room) return;
-  if (!confirm(`退出房间「${room.name}」？该房间的未读会清空，重新进入需要再输入口令。`)) return;
-  room.events?.close(); // 先断开，避免收到自己退出触发的事件
+  if (!confirm(`退出房间「${room.name}」？该房间的未读会清空，重新进入需要邀请链接。`)) return;
+  room.events?.close();
   try {
     await fetch('/api/leave', { method: 'POST', headers: { Authorization: `Bearer ${room.session}` } });
-  } catch { /* 网络错误也照常本地移除 */ }
+  } catch { /* 忽略网络错误 */ }
   removeRoom(room.code);
 }
 
@@ -443,64 +553,87 @@ function applyMode(next) {
   }
   const creating = mode === 'create';
   fieldRoom.hidden = !creating;
-  regenBtn.hidden = !creating;
-  codeLabel.textContent = creating ? '房间口令（4 位数字，可改）' : '房间口令';
-  codeInput.placeholder = creating ? '' : '4 位数字口令';
+  fieldLink.hidden = creating;
   modeHint.textContent = creating
-    ? '系统已分配一个口令，可自己改成任意 4 位数字。把口令告诉要加入的人。'
-    : '输入房间口令和昵称即可加入。';
+    ? '填个昵称即可创建，创建后会给你二维码和邀请码分享给别人。'
+    : '粘贴好友发来的邀请码，填个昵称即可加入。';
   identitySubmit.textContent = creating ? '创建' : '加入';
-  if (creating && !/^\d{4}$/.test(codeInput.value)) codeInput.value = randomCode();
 }
 
 for (const btn of modeSeg.querySelectorAll('.seg-btn')) {
   btn.addEventListener('click', () => {
     identityError.textContent = '';
-    if (mode !== btn.dataset.mode) codeInput.value = btn.dataset.mode === 'create' ? randomCode() : '';
     applyMode(btn.dataset.mode);
-    (mode === 'create' ? nicknameInput : codeInput).focus();
+    (mode === 'create' ? nicknameInput : inviteLinkInput).focus();
   });
 }
 
-regenBtn.addEventListener('click', () => {
-  codeInput.value = randomCode();
-  identityError.textContent = '';
-});
-
-codeInput.addEventListener('input', () => {
-  codeInput.value = codeInput.value.replace(/\D/g, '').slice(0, 4);
-});
+function parseInvite(str) {
+  const text = (str || '').trim();
+  // 新式邀请码：4 位房间码 + '.' + 密钥
+  const dot = text.indexOf('.');
+  if (dot > 0 && !/[:/?#]/.test(text.slice(0, dot))) {
+    const code = text.slice(0, dot);
+    const key = text.slice(dot + 1);
+    if (/^\d{4}$/.test(code) && key) return { code, key };
+  }
+  // 兼容旧的完整链接
+  let code = '';
+  let key = '';
+  try {
+    const u = new URL(text);
+    code = u.searchParams.get('code') || '';
+    key = new URLSearchParams(u.hash.slice(1)).get('k') || '';
+  } catch {
+    const m = text.match(/code=(\d{4})/);
+    if (m) code = m[1];
+    const h = text.match(/[#&]k=([A-Za-z0-9_-]+)/);
+    if (h) key = h[1];
+  }
+  return { code, key };
+}
 
 function openIdentity() {
   identityError.textContent = '';
   nicknameInput.value = defaultNick;
   roomInput.value = '';
   identityTitle.textContent = joined.size ? '加入 / 创建房间' : '进入团子';
-  if (codeParam && !joined.has(codeParam)) {
+  if (codeParam && keyParam && !joined.has(codeParam)) {
     applyMode('join');
-    codeInput.value = codeParam;
+    inviteLinkInput.value = `${codeParam}.${keyParam}`;
   } else {
     applyMode(mode);
+    inviteLinkInput.value = '';
   }
   $('#identity-cancel').hidden = joined.size === 0;
   if (!dialog.open) dialog.showModal();
-  (mode === 'create' || !defaultNick ? nicknameInput : codeInput).focus();
+  (mode === 'create' || !defaultNick ? nicknameInput : inviteLinkInput).focus();
 }
 
 identityForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   const nextName = nicknameInput.value.trim();
-  const nextCode = codeInput.value.trim();
-  const nextRoom = roomInput.value.trim();
   if (!nextName) { identityError.textContent = '请填写昵称'; return; }
-  if (mode === 'join' && !/^\d{4}$/.test(nextCode)) { identityError.textContent = '请输入 4 位数字口令'; return; }
-  if (mode === 'create' && nextCode && !/^\d{4}$/.test(nextCode)) { identityError.textContent = '口令必须是 4 位数字'; return; }
+
+  let payload;
+  let keyStr;
+  if (mode === 'create') {
+    keyStr = newKeyString();
+    payload = { mode: 'create', sender: nextName, room: roomInput.value.trim() };
+  } else {
+    const { code, key } = parseInvite(inviteLinkInput.value);
+    if (!/^\d{4}$/.test(code) || !key) { identityError.textContent = '邀请码无效，请粘贴完整邀请码'; return; }
+    try { importKey(key); } catch { identityError.textContent = '邀请码里的密钥无效'; return; }
+    keyStr = key;
+    payload = { mode: 'join', sender: nextName, code };
+  }
+
   identitySubmit.disabled = true;
   try {
     const response = await fetch('/api/join', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode, sender: nextName, code: nextCode, room: mode === 'create' ? nextRoom : undefined }),
+      body: JSON.stringify(payload),
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || '操作失败');
@@ -508,7 +641,6 @@ identityForm.addEventListener('submit', async (event) => {
     defaultNick = data.sender;
     localStorage.setItem(STORE_NAME, defaultNick);
 
-    // 已在该房间：替换旧会话，避免重复
     const existing = joined.get(data.room.code);
     if (existing) existing.events?.close();
 
@@ -517,6 +649,8 @@ identityForm.addEventListener('submit', async (event) => {
       name: data.room.name,
       sender: data.sender,
       session: data.session,
+      key: importKey(keyStr),
+      keyStr,
       events: null,
       connected: false,
       messages: [],
@@ -531,10 +665,10 @@ identityForm.addEventListener('submit', async (event) => {
     await connectRoom(room);
     setHeader(room);
     persist();
-    if (location.search) history.replaceState(null, '', location.pathname);
+    if (location.search || location.hash) history.replaceState(null, '', location.pathname);
     dialog.close();
-    if (mode === 'create') toast(`房间已创建，口令 ${room.code}，把它告诉要加入的人`);
     messageInput.focus();
+    if (mode === 'create') openShare(room); // 建好房间立刻给二维码 + 邀请码
   } catch (error) {
     identityError.textContent = error.message;
   } finally {
@@ -570,7 +704,6 @@ composer.addEventListener('submit', async (event) => {
   const files = pending.map((p) => p.file);
   if (!text && !files.length) return;
 
-  // 先发暂存的附件
   for (const file of files) uploadFile(room, file);
   clearPending();
 
@@ -580,10 +713,11 @@ composer.addEventListener('submit', async (event) => {
   }
   sendButton.disabled = true;
   try {
+    const cipher = encryptText(room.key, room.sender, text);
     const response = await fetch('/api/messages', {
       method: 'POST',
       headers: { Authorization: `Bearer ${room.session}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text: cipher }),
     });
     if (response.status === 401) return removeRoom(room.code, '会话已失效，请重新加入房间');
     if (!response.ok) throw new Error((await response.json()).error || '发送失败');
@@ -637,45 +771,57 @@ document.addEventListener('keydown', (event) => {
   if (!lightbox.hidden) lightbox.click();
 });
 
-/* ---------- 发送文件 ---------- */
+/* ---------- 发送文件（加密后上传） ---------- */
 
-function uploadFile(room, file) {
-  const pendingItem = { sender: room.sender, time: new Date().toISOString(), type: 'file', fileName: file.name, size: file.size };
-  const node = buildMessage(room, pendingItem, { pending: true });
+async function uploadFile(room, file) {
+  if (file.size > ENC_MAX_FILE) {
+    toast(`加密模式下单文件请小于 ${Math.floor(ENC_MAX_FILE / 1024 / 1024)} MB`);
+    return;
+  }
+  const node = buildPendingCard(room, file);
   const meta = node.querySelector('.file-meta');
   const bar = node.querySelector('.file-progress-bar');
   messagesEl.append(node);
   scrollToBottom();
 
+  let cipherBytes;
+  let encName;
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    cipherBytes = encryptBytes(room.key, room.sender, bytes);
+    encName = encryptText(room.key, room.sender, JSON.stringify({ n: file.name, s: file.size }));
+  } catch {
+    node.remove();
+    toast('加密失败');
+    return;
+  }
+
   const xhr = new XMLHttpRequest();
   xhr.open('POST', '/api/files');
   xhr.setRequestHeader('Authorization', `Bearer ${room.session}`);
-  xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
+  xhr.setRequestHeader('X-File-Name', encodeURIComponent(encName));
   xhr.upload.onprogress = (event) => {
     if (!event.lengthComputable) return;
     const percent = Math.round((event.loaded / event.total) * 100);
     bar.style.width = `${percent}%`;
-    meta.textContent = `${formatSize(file.size)} · 传输中 ${percent}%`;
+    meta.textContent = `${formatSize(file.size)} · 加密上传中 ${percent}%`;
   };
   xhr.onload = () => {
-    node.remove(); // 真实消息会经 SSE 回传并渲染
+    node.remove(); // 真实消息经 SSE 回传后渲染
     if (xhr.status >= 400) {
       let message = '上传失败';
       try { message = JSON.parse(xhr.responseText).error || message; } catch { /* ignore */ }
       toast(message);
     }
   };
-  xhr.onerror = () => {
-    node.remove();
-    toast('上传失败');
-  };
-  xhr.send(file);
+  xhr.onerror = () => { node.remove(); toast('上传失败'); };
+  xhr.send(cipherBytes);
 }
 
-/* ---------- 暂存待发送的附件（粘贴 / 选择 / 拖拽） ---------- */
+/* ---------- 暂存待发送的附件 ---------- */
 
 const attachStrip = $('#attach-strip');
-const pending = []; // { file, key, url }
+const pending = [];
 let pendingKey = 0;
 
 function renderAttachStrip() {
@@ -723,7 +869,6 @@ function clearPending() {
   renderAttachStrip();
 }
 
-// 回形针：选中文件后暂存，不立即上传
 fileInput.addEventListener('change', () => {
   if (!activeRoom()) return;
   [...fileInput.files].forEach(addPending);
@@ -731,7 +876,6 @@ fileInput.addEventListener('change', () => {
   messageInput.focus();
 });
 
-// 在输入框粘贴图片（或文件）：暂存缩略图，回车再发送
 messageInput.addEventListener('paste', (event) => {
   if (!activeRoom()) return;
   const files = [...(event.clipboardData?.files || [])];
@@ -740,7 +884,6 @@ messageInput.addEventListener('paste', (event) => {
   files.forEach(addPending);
 });
 
-// 把图片 / 文件拖到聊天区也暂存
 const chatMain = document.querySelector('.chat');
 chatMain.addEventListener('dragover', (event) => { if (event.dataTransfer?.types.includes('Files')) event.preventDefault(); });
 chatMain.addEventListener('drop', (event) => {
@@ -761,6 +904,10 @@ narrow.addEventListener('change', applyPlaceholder);
 applyPlaceholder();
 
 async function restore() {
+  if (!cryptoReady()) {
+    toast('当前环境不支持加密，无法使用');
+    return;
+  }
   let stored = [];
   try { stored = JSON.parse(localStorage.getItem(STORE_ROOMS) || '[]'); } catch { stored = []; }
   if (!Array.isArray(stored) || !stored.length) {
@@ -770,11 +917,15 @@ async function restore() {
   }
   const wantedActive = localStorage.getItem(STORE_ACTIVE);
   for (const entry of stored) {
+    let key;
+    try { key = importKey(entry.keyStr); } catch { continue; } // 没有有效密钥的房间跳过
     joined.set(entry.code, {
       code: entry.code,
       name: entry.name,
       sender: entry.sender,
       session: entry.session,
+      key,
+      keyStr: entry.keyStr,
       events: null,
       connected: false,
       messages: [],
@@ -784,6 +935,7 @@ async function restore() {
       lastItem: null,
     });
   }
+  if (joined.size === 0) { setHeader(null); openIdentity(); return; }
   activeCode = joined.has(wantedActive) ? wantedActive : [...joined.keys()][0];
   renderRail();
   setHeader(activeRoom());

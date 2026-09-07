@@ -22,6 +22,10 @@
           <span id="conn-label">正在连接…</span>
         </div>
         <div class="spacer"></div>
+        <button type="button" class="btn invite" id="invite" title="邀请好友" hidden>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+          邀请
+        </button>
         <button type="button" class="btn leave" id="leave-room" title="退出当前房间" hidden>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
           退出房间
@@ -103,7 +107,11 @@
           <button type="button" class="seg-btn is-active" data-mode="join">加入房间</button>
           <button type="button" class="seg-btn" data-mode="create">创建房间</button>
         </div>
-        <p class="modal-hint" id="mode-hint">输入房间口令和昵称即可加入。</p>
+        <p class="modal-hint" id="mode-hint">粘贴好友发来的邀请码，填个昵称即可加入。</p>
+        <label class="field" id="field-link">
+          <span>邀请码</span>
+          <input id="invite-link" autocomplete="off" placeholder="粘贴好友发来的邀请码" />
+        </label>
         <label class="field" id="field-room" hidden>
           <span>房间名（选填）</span>
           <input id="room" maxlength="40" placeholder="例如 项目组、家庭" />
@@ -112,19 +120,26 @@
           <span>昵称</span>
           <input id="nickname" maxlength="40" required autocomplete="nickname" placeholder="输入昵称" />
         </label>
-        <label class="field">
-          <div class="field-head">
-            <span id="code-label">房间口令</span>
-            <button type="button" class="link-btn" id="regen" hidden>换一个</button>
-          </div>
-          <input id="code" inputmode="numeric" maxlength="4" autocomplete="off" required placeholder="4 位数字口令" />
-        </label>
         <p class="error" id="identity-error"></p>
         <div class="modal-actions">
           <button type="button" class="btn" id="identity-cancel">取消</button>
           <button type="submit" class="btn btn-primary" id="identity-submit">加入</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog class="modal share-modal" id="share-dialog">
+      <div class="modal-title">邀请好友进入「<span id="share-room"></span>」</div>
+      <p class="modal-hint">扫码或把邀请码发给对方。邀请码里含有加密密钥，只会留在参与者浏览器、不会发给服务器——请通过可信渠道分享。</p>
+      <div class="qr-box" id="share-qr"></div>
+      <label class="field">
+        <span>邀请码</span>
+        <input id="share-link" readonly />
+      </label>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="share-close">关闭</button>
+        <button type="button" class="btn btn-primary" id="share-copy">复制邀请码</button>
+      </div>
     </dialog>
 
     <div class="toast" id="toast" hidden></div>
@@ -145,6 +160,8 @@
       </div>
     </template>
 
+    <script src="/vendor/sjcl.min.js"></script>
+    <script src="/vendor/qrcode.min.js"></script>
     <script type="module" src="/app.js"></script>
   </body>
 </html>

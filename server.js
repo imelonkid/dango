@@ -11,7 +11,7 @@ const ROOT = fileURLToPath(new URL('.', import.meta.url));
 const PUBLIC_DIR = join(ROOT, 'public');
 const DATA_DIR = join(ROOT, 'data', 'rooms');
 const DEFAULT_MAX_FILE_SIZE = 100 * 1024 * 1024;
-const MAX_MESSAGE_LENGTH = 4000;
+const MAX_MESSAGE_LENGTH = 16000; // 端到端加密后密文比明文长，放宽上限
 const MAX_MESSAGES = 500;
 const MAX_ROOMS = 100;
 const MAX_NAME_LENGTH = 40;
@@ -456,9 +456,11 @@ export async function createApp(options = {}) {
           const length = Number(req.headers['content-length'] || 0);
           if (!length) return json(res, 400, { error: '文件为空' });
           if (length > maxFileSize) return json(res, 413, { error: `文件不能超过 ${Math.floor(maxFileSize / 1024 / 1024)} MB` });
-          const originalName = safeName(decodeHeader(req.headers['x-file-name']) || 'file');
+          // 文件名可能是端到端加密后的密文（含 base64 字符），不能用 safeName 清洗；
+          // 只做长度限制。存储名只用随机 fileId，绝不含用户输入，路径安全。
+          const originalName = decodeHeader(req.headers['x-file-name']).slice(0, 512) || 'file';
           const fileId = randomUUID();
-          const storedName = `${fileId}${extname(originalName).slice(0, 16)}`;
+          const storedName = fileId;
           const destination = join(room.dir, storedName);
           let received = 0;
           req.on('data', (chunk) => {
