@@ -1,0 +1,31 @@
+{
+  "name": "dango-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "团子 Dango 的 macOS 桌面壳（Electron）",
+  "type": "module",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --mac"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "net.dango.desktop",
+    "productName": "团子 Dango",
+    "directories": { "output": "dist", "buildResources": "build" },
+    "files": ["main.js", "package.json"],
+    "extraResources": [
+      { "from": "../server.js", "to": "app/server.js" },
+      { "from": "../public", "to": "app/public" }
+    ],
+    "mac": {
+      "target": ["dmg"],
+      "category": "public.app-category.social-networking",
+      "icon": "build/icon.icns"
+    }
+  }
+}
