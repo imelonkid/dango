@@ -133,7 +133,7 @@ function scrollToBottom() {
 }
 
 function persist() {
-  const list = [...joined.values()].map((r) => ({ code: r.code, name: r.name, sender: r.sender, session: r.session, keyStr: r.keyStr }));
+  const list = [...joined.values()].map((r) => ({ code: r.code, name: r.name, sender: r.sender, session: r.session, keyStr: r.keyStr, muted: !!r.muted }));
   localStorage.setItem(STORE_ROOMS, JSON.stringify(list));
   if (activeCode) localStorage.setItem(STORE_ACTIVE, activeCode);
   else localStorage.removeItem(STORE_ACTIVE);
@@ -293,6 +293,153 @@ newPill.addEventListener('click', () => {
   scrollToBottom();
 });
 
+/* ---------- 消息通知 ---------- */
+
+const muteToggle = $('#mute-toggle');
+let baseTitle = '团子 Dango';
+let audioCtx = null;
+
+function pageActive() {
+  return document.visibilityState === 'visible' && document.hasFocus();
+}
+
+function totalUnread() {
+  let n = scrollbackUnread;
+  for (const room of joined.values()) n += room.unread;
+  return n;
+}
+
+function faviconLink() {
+  let link = document.querySelector('link[rel="icon"]');
+  if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.append(link); }
+  return link;
+}
+
+function drawFavicon(n) {
+  try {
+    const c = document.createElement('canvas');
+    c.width = 64;
+    c.height = 64;
+    const g = c.getContext('2d');
+    g.fillStyle = '#3a9bb0';
+    g.beginPath();
+    g.arc(32, 32, 30, 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = '#fff';
+    g.font = 'bold 34px -apple-system, sans-serif';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText('团', 32, 35);
+    if (n > 0) {
+      g.fillStyle = '#e5484d';
+      g.beginPath();
+      g.arc(49, 15, 15, 0, Math.PI * 2);
+      g.fill();
+      g.fillStyle = '#fff';
+      g.font = 'bold 22px -apple-system, sans-serif';
+      g.fillText(n > 9 ? '9+' : String(n), 49, 16);
+    }
+    faviconLink().href = c.toDataURL('image/png');
+  } catch { /* canvas 不可用则忽略 */ }
+}
+
+function updateBadges() {
+  const n = totalUnread();
+  document.title = n > 0 ? `(${n}) ${baseTitle}` : baseTitle;
+  drawFavicon(n);
+}
+
+function playBlip(room) {
+  if (room?.muted) return;
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = 660;
+    const t = audioCtx.currentTime;
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(0.15, t + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.25);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(t);
+    osc.stop(t + 0.26);
+  } catch { /* ignore */ }
+}
+
+function askNotifyPermission() {
+  if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+    Notification.requestPermission().catch(() => {});
+  }
+}
+
+function decryptPreview(room, item) {
+  try {
+    if (item.type === 'file') {
+      const meta = decryptFileMeta(room, item);
+      return meta ? `[文件] ${meta.name}` : '[文件]';
+    }
+    return decryptText(room.key, item.sender, item.text);
+  } catch {
+    return '新消息';
+  }
+}
+
+function showSystemNotification(room, item) {
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted' || room.muted) return;
+  try {
+    const note = new Notification(`${item.sender} · ${room.name}`, {
+      body: decryptPreview(room, item).slice(0, 120),
+      tag: `dango-${room.code}`,
+      renotify: true,
+    });
+    note.onclick = () => { window.focus(); setActive(room.code); note.close(); };
+  } catch { /* ignore */ }
+}
+
+// 收到别人消息、且你没在专心看这个房间时才提醒
+function alertNewMessage(room, item) {
+  if (item.sender === room.sender) return;
+  if (room.code === activeCode && pageActive()) return;
+  playBlip(room);
+  if (!pageActive()) showSystemNotification(room, item);
+}
+
+function refreshMuteButton() {
+  const room = activeRoom();
+  muteToggle.hidden = !room;
+  if (!room) return;
+  const muted = !!room.muted;
+  muteToggle.querySelector('.icon-bell').hidden = muted;
+  muteToggle.querySelector('.icon-bell-off').hidden = !muted;
+  muteToggle.title = muted ? '已静音（点击开启通知）' : '通知开启（点击静音本房间）';
+  muteToggle.classList.toggle('muted', muted);
+}
+
+muteToggle.addEventListener('click', () => {
+  const room = activeRoom();
+  if (!room) return;
+  room.muted = !room.muted;
+  persist();
+  refreshMuteButton();
+  toast(room.muted ? `已静音「${room.name}」` : `已开启「${room.name}」通知`);
+});
+
+// 回到前台：清掉当前房间未读，刷新角标
+function onPageActive() {
+  const room = activeRoom();
+  if (room) {
+    room.unread = 0;
+    scrollbackUnread = 0;
+    newPill.hidden = true;
+    renderRail();
+  }
+  updateBadges();
+}
+document.addEventListener('visibilitychange', () => { if (pageActive()) onPageActive(); });
+window.addEventListener('focus', onPageActive);
+
 /* ---------- 收到新消息 ---------- */
 
 function onRoomMessage(room, item) {
@@ -304,7 +451,7 @@ function onRoomMessage(room, item) {
   if (room.code === activeCode) {
     const wasBottom = atBottom;
     domAppend(room, item);
-    if (wasBottom || item.sender === room.sender) {
+    if (item.sender === room.sender || (pageActive() && wasBottom)) {
       scrollToBottom();
     } else {
       scrollbackUnread += 1;
@@ -315,6 +462,8 @@ function onRoomMessage(room, item) {
     room.unread += 1;
     renderRail();
   }
+  alertNewMessage(room, item);
+  updateBadges();
 }
 
 /* ---------- 在线成员 ---------- */
@@ -405,7 +554,9 @@ function setHeader(room) {
     inviteButton.hidden = true;
     $('#my-initial').textContent = '?';
     $('#my-name').textContent = defaultNick || '未登录';
-    document.title = '团子 Dango';
+    baseTitle = '团子 Dango';
+    refreshMuteButton();
+    updateBadges();
     return;
   }
   roomNameEl.textContent = `${room.name} · 口令 ${room.code}`;
@@ -414,7 +565,9 @@ function setHeader(room) {
   inviteButton.hidden = false;
   $('#my-initial').textContent = initial(room.sender);
   $('#my-name').textContent = room.sender;
-  document.title = `${room.name} · 团子`;
+  baseTitle = `${room.name} · 团子`;
+  refreshMuteButton();
+  updateBadges();
   setConnection(room.connected ? 'connected' : 'connecting', room.connected ? '已连接' : '正在连接…', `口令 ${room.code}`);
 }
 
@@ -651,6 +804,7 @@ identityForm.addEventListener('submit', async (event) => {
       session: data.session,
       key: importKey(keyStr),
       keyStr,
+      muted: false,
       events: null,
       connected: false,
       messages: [],
@@ -703,6 +857,7 @@ composer.addEventListener('submit', async (event) => {
   const text = messageInput.value.trim();
   const files = pending.map((p) => p.file);
   if (!text && !files.length) return;
+  askNotifyPermission(); // 借用户点发送这个手势申请通知权限
 
   for (const file of files) uploadFile(room, file);
   clearPending();
@@ -926,6 +1081,7 @@ async function restore() {
       session: entry.session,
       key,
       keyStr: entry.keyStr,
+      muted: !!entry.muted,
       events: null,
       connected: false,
       messages: [],

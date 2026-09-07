@@ -293,6 +293,8 @@ button, input, textarea { font-family: inherit; }
 .qr-box img { display: block; width: 200px; height: 200px; image-rendering: pixelated; }
 #share-link { font-size: 12px; font-family: ui-monospace, Menlo, monospace; }
 .share-modal code { font-family: ui-monospace, Menlo, monospace; background: var(--surface-2); padding: 0 3px; border-radius: 3px; }
+.btn.icon-only { padding: 0 9px; }
+.mute.muted { color: var(--text-2); }
 .invite { color: var(--text-2); }
 .invite:hover { color: var(--accent-ink); }
 .bubble.undecryptable { color: var(--text-2); font-style: italic; }
